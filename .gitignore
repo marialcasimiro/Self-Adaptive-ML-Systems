@@ -1,0 +1,11 @@
+**/.DS_Store
+*.pyc
+
+
+# ignore text/results files
+*.csv
+*.pdf
+*.pkl
+*.tex
+*.tra
+*.txt
