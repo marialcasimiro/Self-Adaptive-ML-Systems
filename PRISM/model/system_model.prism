@@ -1,0 +1,369 @@
+mdp
+
+//////////////////////////////////////////
+//					//
+//	    MODEL LABELS		//
+//					//
+//////////////////////////////////////////
+
+
+// I'm considering the end state to correspond to when
+// the considered time period ends
+label "end" = (time = HORIZON + 1) & (envState = envWait);
+
+
+//////////////////////////////////////////
+//					//
+//	  MODEL REWARD STRUCTURES	//
+//					//
+//////////////////////////////////////////
+
+rewards "systemUtility"
+	[tick] true & (time>0) : (
+		(tacticLatency / 100) * (PERCENT_TXS / 100) * (((INIT_FPR > FPR_THRESHOLD) ? FPR_SLA_COST : 0) + ((INIT_TPR < RECALL_THRESHOLD) ? RECALL_SLA_COST : 0)) +
+		(1 - tacticLatency / 100) * (1 - PERCENT_TXS / 100) * (tacticCost + fpr_violation_cost + recall_violation_cost)
+	);
+endrewards
+
+
+
+//////////////////////////////////////////
+//					//
+//	     MODEL FORMULAS		//
+//					//
+//////////////////////////////////////////
+formula tacticCost = (currTactic = retrain ? RETRAIN_COST : 0);
+
+formula tacticLatency = (currTactic = retrain ? RETRAIN_LATENCY : 0);
+
+formula fpr = (100-TNR);
+
+formula recall = TPR;
+
+formula fpr_violation_cost = (fpr > FPR_THRESHOLD) ? FPR_SLA_COST : 0;
+
+formula recall_violation_cost = (recall < RECALL_THRESHOLD) ? RECALL_SLA_COST : 0;
+
+
+
+// update the ML confusion matrix
+formula newTP = ((TPR + TPR_tactic) >= 100 ? 100 : TPR + TPR_tactic);
+formula newTN = ((TNR + TNR_tactic) >= 100 ? 100 : TNR + TNR_tactic);
+formula newFN = ((FNR - TPR_tactic) <= 0 ? 0 : FNR - TPR_tactic);
+formula newFP = ((FPR - TNR_tactic) <= 0 ? 0 : FPR - TNR_tactic);
+
+
+//////////////////////////////////////////
+//					//
+//	   APPLICABLE TACTICS		//
+//					//
+//////////////////////////////////////////
+const int NOP = 0;
+const int ALL = 1;
+const int RETRAIN = 2;
+
+const int TACTICS;
+
+
+//////////////////////////////////////////
+//					//
+//	   MODEL CONSTANTS		//
+//					//
+//////////////////////////////////////////
+
+const int MAX_TRANSACTIONS = 1000000;
+
+const int DELTA = 0;	// benefits model predicts increase/decrease
+const int ABS = 1;	// benefits model predicts absolute future values
+
+
+//const int rewardsOffset = (AVG_TRANSACTIONS+STD_TRANSACTIONS) * 1000;
+
+
+//////////////////////////////////////////
+//					//
+//	  MONITORED VARIABLES		//
+//					//
+//////////////////////////////////////////
+const int HORIZON;
+
+const int CURR_NEW_DATA;
+
+const int RETRAIN_LATENCY;	// how long it takes for the benefits of retrain to be visible
+
+const int AVG_TRANSACTIONS;
+const int PERCENT_TXS;
+
+const int INIT_TPR;	// current TPR of the fraud detection model
+const int INIT_TNR;	// current TNR of the fraud detection model
+const int INIT_FPR;	// current FPR of the fraud detection model
+const int INIT_FNR;	// current FNR of the fraud detection model
+
+const int FPR_SLA_COST;		// cost of violating the FPR threshold
+const int RECALL_SLA_COST;	// cost of violating the RECALL threshold
+const int FPR_THRESHOLD;	// FPR SLA threshold
+const int RECALL_THRESHOLD;	// RECALL SLA threshold
+
+const int RETRAIN_COST;		// cost of retraining the fraud detection model
+
+const int new_TPR_retrain;	// expected/predicted (increase in) TPR due to a model retrain (avg)
+const int new_TNR_retrain;	// expected/predicted (increase in) TNR due to a model retrain (avg)
+const int new_TPR_noRetrain;	// expected/predicted TPR if the model is not retrained (avg)
+const int new_TNR_noRetrain;	// expected/predicted TNR if the model is not retrained (avg)
+
+const int new_TPR_retrain_std;		// standard deviation of the TPR prediction when retrain occurs
+const int new_TNR_retrain_std;		// standard deviation of the TNR prediction when retrain occurs
+const int new_TPR_noRetrain_std;	// standard deviation of the TPR prediction when nop is executed
+const int new_TNR_noRetrain_std;	// standard deviation of the TNR prediction when nop is executed
+
+const int new_TPR_retrain_5;	// 5th percentile of the expected/predicted (increase in) TPR due to a model retrain
+const int new_TPR_retrain_50;	// 50th percentile of the expected/predicted (increase in) TPR due to a model retrain
+const int new_TPR_retrain_95;	// 95th percentile of the expected/predicted (increase in) TPR due to a model retrain
+
+const int new_TNR_retrain_5;	// 5th percentile of the expected/predicted (increase in) TNR due to a model retrain
+const int new_TNR_retrain_50;	// 50th percentile of the expected/predicted (increase in) TNR due to a model retrain
+const int new_TNR_retrain_95;	// 95th percentile of the expected/predicted (increase in) TNR due to a model retrain
+
+const int new_TPR_noRetrain_5;	// 5th percentile of the expected/predicted (increase in) TPR when nop is executed
+const int new_TPR_noRetrain_50;	// 50th percentile of the expected/predicted (increase in) TPR when nop is executed
+const int new_TPR_noRetrain_95;	// 95th percentile of the expected/predicted (increase in) TPR when nop is executed
+
+const int new_TNR_noRetrain_5;	// 5th percentile of the expected/predicted (increase in) TNR when nop is executed
+const int new_TNR_noRetrain_50;	// 50th percentile of the expected/predicted (increase in) TNR when nop is executed
+const int new_TNR_noRetrain_95;	// 95th percentile of the expected/predicted (increase in) TNR when nop is executed
+
+const int BENEFITS_MODEL_TYPE;	// type of benefits model (abs or delta)
+
+// whether benefits models are used to predict the evolution
+// of the confusion matrix when 'nop' is selected
+const bool NO_RETRAIN_MODELS;
+
+
+//////////////////////////////////////////
+//					//
+//	      CLOCK MODULE		//
+//					//
+//////////////////////////////////////////
+
+// time counter to count how much time has passed and to keep
+// track of latencies of jobs and repair tactic
+module clk
+
+	time : [0 .. HORIZON + 1] init 0;
+	readyToTick : bool init true;
+
+	[tick] readyToTick & (time<HORIZON+1) -> 1 : (time'=time+1)&(readyToTick'=false);
+	[tack] !readyToTick & (time<HORIZON+1) -> 1 : (readyToTick'=true);
+
+endmodule
+
+
+
+//////////////////////////////////////////
+//					//
+//	   ENVIRONMENT MODULE		//
+//					//
+//////////////////////////////////////////
+
+
+// the environment generates batches of transactions
+// the amount of fraudulent transactions in each batch
+// is a funcion of the number of transactions in a batch
+// and of the expected fraud rate
+
+const int envWait = 0;
+const int sendBatch = 1;
+
+module environment
+
+	pFraud : [0 .. 100] init 0;
+	transactions : [0 .. MAX_TRANSACTIONS] init 0;
+	envState : [envWait .. sendBatch] init envWait;
+
+	[tick] (envState=envWait)&(time<=HORIZON) ->
+		1: (transactions'=AVG_TRANSACTIONS)&(envState'=sendBatch);
+		//  0.185:(pFraud'=AVG_FRAUD_RATE-STD_FRAUD_RATE)&(transactions'=AVG_TRANSACTIONS-STD_TRANSACTIONS)&(envState'=sendBatch)
+		//+ 0.630:(pFraud'=AVG_FRAUD_RATE)&(transactions'=AVG_TRANSACTIONS)&(envState'=sendBatch)
+		//+ 0.185:(pFraud'=AVG_FRAUD_RATE+STD_FRAUD_RATE)&(transactions'=AVG_TRANSACTIONS+STD_TRANSACTIONS)&(envState'=sendBatch);
+		//  0.185:(transactions'=TRANSACTIONS_5)&(envState'=sendBatch)
+		//+ 0.630:(transactions'=TRANSACTIONS_50)&(envState'=sendBatch)
+		//+ 0.185:(transactions'=TRANSACTIONS_95)&(envState'=sendBatch);
+
+	[newBatch] (envState=sendBatch) -> 1:(envState'=envWait);
+
+	[endExecution] !readyToTick & (time>=HORIZON+1) -> 1:(envState'=envWait);
+
+
+endmodule
+
+
+
+
+//////////////////////////////////////////
+//					//
+//	 FRAUD DETECTION SYSTEM		//
+//					//
+//////////////////////////////////////////
+const int sysWait = 0;
+const int updateMatrix = 1;
+
+module fds
+
+	// system state
+	sysState : [sysWait .. updateMatrix] init sysWait;
+
+	// confusion matrix of the FDS for known transactions
+	TPR : [0 .. 100] init INIT_TPR;
+	TNR : [0 .. 100] init INIT_TNR;
+	FPR : [0 .. 100] init INIT_FPR;
+	FNR : [0 .. 100] init INIT_FNR;
+
+	// Expected increase/decrease in TPR/TNR due to the tactic executed
+	TPR_tactic : [0 .. 100] init 0;
+	TNR_tactic : [0 .. 100] init 0;
+
+
+	// amount of fraudulent and legitimate transactions
+	// in the current batch
+	countFraud : [0 .. MAX_TRANSACTIONS] init 0;
+	countLegit : [0 .. MAX_TRANSACTIONS] init 0;
+
+
+	// new data with which to retrain the model
+	newData : [0 .. (HORIZON+1)*MAX_TRANSACTIONS] init CURR_NEW_DATA;
+
+	fds_go : bool init false;
+
+
+	[newBatch] (newData<HORIZON*MAX_TRANSACTIONS) ->
+			1:(newData'=newData+transactions);
+			//&(countFraud'=floor(transactions*pFraud/100))
+			//&(countLegit'=ceil(transactions-transactions*pFraud/100));
+
+	//[retrain_complete] true -> 1:(TP'=newTPadapt)&(TN'=newTNadapt)&(FP'=newFPadapt)&(FN'=newFNadapt)&(newData'=0)&(sysState'=updateMatrix);
+	[retrain_complete] true&(BENEFITS_MODEL_TYPE=DELTA) ->
+		  0.185:(TPR_tactic'=new_TPR_retrain_5)&(TNR_tactic'=new_TNR_retrain_5)&(sysState'=updateMatrix)//&(newData'=0)
+		+ 0.630:(TPR_tactic'=new_TPR_retrain_50)&(TNR_tactic'=new_TNR_retrain_50)&(sysState'=updateMatrix)//&(newData'=0)
+		+ 0.185:(TPR_tactic'=new_TPR_retrain_95)&(TNR_tactic'=new_TNR_retrain_95)&(sysState'=updateMatrix);//&(newData'=0);
+
+	[retrain_complete] true&(BENEFITS_MODEL_TYPE=ABS) ->
+		  0.185:(TPR'=new_TPR_retrain_5)&(TNR'=new_TNR_retrain_5)&(FPR'=(100-new_TNR_retrain_5))&(FNR'=(100-new_TPR_retrain_5))&(fds_go'=false)//&(newData'=0)
+		+ 0.630:(TPR'=new_TPR_retrain_50)&(TNR'=new_TNR_retrain_50)&(FPR'=(100-new_TNR_retrain_50))&(FNR'=(100-new_TPR_retrain_50))&(fds_go'=false)//&(newData'=0)
+		+ 0.185:(TPR'=new_TPR_retrain_95)&(TNR'=new_TNR_retrain_95)&(FPR'=(100-new_TNR_retrain_95))&(FNR'=(100-new_TPR_retrain_95))&(fds_go'=false);//&(newData'=0);
+
+	//[nop_start] true -> 1:(sysState'=updateMatrix);
+	[nop_start] true&(!NO_RETRAIN_MODELS) -> 1:(fds_go'=false);
+	[nop_start] true&(BENEFITS_MODEL_TYPE=DELTA)&(NO_RETRAIN_MODELS) ->
+		  0.185:(TPR_tactic'=new_TPR_noRetrain_5)&(TNR_tactic'=new_TNR_noRetrain_5)&(sysState'=updateMatrix)
+		+ 0.630:(TPR_tactic'=new_TPR_noRetrain_50)&(TNR_tactic'=new_TNR_noRetrain_50)&(sysState'=updateMatrix)
+		+ 0.185:(TPR_tactic'=new_TPR_noRetrain_95)&(TNR_tactic'=new_TNR_noRetrain_95)&(sysState'=updateMatrix);
+
+	[nop_start] true&(BENEFITS_MODEL_TYPE=ABS)&(NO_RETRAIN_MODELS) ->
+		  0.185:(TPR'=new_TPR_noRetrain_5)&(TNR'=new_TNR_noRetrain_5)&(FPR'=(100-new_TNR_noRetrain_5))&(FNR'=(100-new_TPR_noRetrain_5))&(fds_go'=false)
+		+ 0.630:(TPR'=new_TPR_noRetrain_50)&(TNR'=new_TNR_noRetrain_50)&(FPR'=(100-new_TNR_noRetrain_50))&(FNR'=(100-new_TPR_noRetrain_50))&(fds_go'=false)
+		+ 0.185:(TPR'=new_TPR_noRetrain_95)&(TNR'=new_TNR_noRetrain_95)&(FPR'=(100-new_TNR_noRetrain_95))&(FNR'=(100-new_TPR_noRetrain_95))&(fds_go'=false);
+
+
+	[] (sysState=updateMatrix) -> 1:(TPR'=newTP)&(TNR'=newTN)&(FPR'=newFP)&(FNR'=newFN)&(fds_go'=false)&(sysState'=sysWait);
+
+
+	[tick] !fds_go -> 1:(fds_go'=true)&(countFraud'=0)&(countLegit'=0);
+
+	[endExecution] !readyToTick&(time>=HORIZON+1) -> 1:(fds_go'=true)&(countFraud'=0)&(countLegit'=0);
+
+endmodule
+
+
+
+//////////////////////////////////////////
+//					//
+//	 ADAPTION MANAGER MODULE	//
+//					//
+//////////////////////////////////////////
+
+// available tactics to improve sys utility
+const int noTactic = 0;
+const int nop = 1;
+const int retrain = 2;
+
+module adaptation_manager
+
+	currTactic : [noTactic .. retrain] init nop;	// current tactic selected to be executed
+	selectTactic : bool init false;	// whether it is the right moment to select a tactic
+
+	[newBatch] !selectTactic -> (selectTactic'=true)&(currTactic'=noTactic);
+
+	[nop_start] (selectTactic=true)&(TACTICS=NOP | TACTICS=ALL) -> (currTactic'=nop)&(selectTactic'=false);
+	[retrain_start] (selectTactic=true)&(newData>0)&(TACTICS=RETRAIN | TACTICS=ALL) -> (currTactic'=retrain)&(selectTactic'=false);
+
+	[tick] (currTactic!=noTactic) -> 1:(currTactic'=noTactic);
+
+	[endExecution] !readyToTick&(time>=HORIZON+1) -> 1:(currTactic'=noTactic);
+
+endmodule
+
+
+module nop
+
+	nop_go : bool init false;
+
+	// a tactic has been selected so don't execute this one
+	[nop_no_start] (readyToTick)&(currTactic!=noTactic)&(nop_go=true) -> (nop_go'=false);
+
+	// nop tactic applicable - start
+	[nop_start] (readyToTick)&(selectTactic)&(nop_go=true) -> (nop_go'=false);
+
+	[tick] !nop_go -> 1:(nop_go'=true);
+
+	[endExecution] !readyToTick&(time>=HORIZON+1) -> 1:(nop_go'=true);
+
+endmodule
+
+
+//////////////////////////////////////////
+//					//
+//	     RETRAIN TACTIC		//
+//					//
+//////////////////////////////////////////
+module retrain
+
+	retrain_state : [0 .. 1] init 0;
+	//retrain_state : [0 .. RETRAIN_LATENCY] init 0;
+	retrain_go : bool init false;
+
+
+	// retrain tactic NOT applicable - DON'T start
+	//[retrain_not_applicable] (readyToTick)&(selectTactic)&(retrain_go=true)&((newData=0)|(il_state>0)) -> (retrain_go'=false);
+
+	// a tactic has been selected so don't execute this one
+	//[retrain_no_start] (readyToTick)&(retrain_go=true)&(currTactic!=noTactic)&(retrain_state=0) -> (retrain_go'=false);
+
+
+	// retrain tactic applicable - START
+	//[retrain_start] (readyToTick)&(selectTactic)&(retrain_go=true)&(newData>0)&(retrain_state=0)&(il_state=0) -> (retrain_go'=false)&(retrain_state'=1);
+
+	// retrain PROGRESS
+	//[retrain_progress] (readyToTick)&(retrain_go=true)&(retrain_state>0)&(retrain_state<RETRAIN_LATENCY) -> (retrain_go'=false)&(retrain_state'=retrain_state+1);
+
+	// retrain tactic COMPLETE
+	//[retrain_complete] (readyToTick)&(retrain_go=true)&(retrain_state=RETRAIN_LATENCY) -> (retrain_go'=true)&(retrain_state'=0);
+
+
+
+	// retrain tactic NOT applicable - DON'T start
+	[retrain_not_applicable] (readyToTick)&(selectTactic)&(retrain_go=true)&(newData=0) -> (retrain_go'=false);
+
+	// a tactic has been selected so don't execute this one
+	[retrain_no_start] (readyToTick)&(currTactic!=noTactic)&(retrain_go=true)&(retrain_state=0) -> (retrain_go'=false);
+
+	// retrain tactic applicable - start
+	[retrain_start] (readyToTick)&(selectTactic)&(retrain_go=true) -> (retrain_state'=1);
+
+	// retrain tactic COMPLETE
+	[retrain_complete] (retrain_go=true)&(retrain_state=1) -> (retrain_go'=false)&(retrain_state'=0);
+
+	[tick] !retrain_go -> 1:(retrain_go'=true);
+
+	[endExecution] !readyToTick&(time>=HORIZON+1) -> 1:(retrain_go'=true);
+
+endmodule
